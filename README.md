@@ -54,13 +54,32 @@ cd cortex
 pip install fastapi uvicorn pydantic pyyaml networkx httpx pytest
 ```
 
-### Ollama (for local LLM)
+### LLM Setup (Any Model Works)
+
+Cortex is **model-agnostic**. Use any LLM via Ollama or direct API:
 
 ```bash
-# Install Ollama from https://ollama.com
-ollama pull gemma4:e4b   # 6GB VRAM
-# or
-ollama pull llama3.2     # faster
+# Ollama (recommended - local, free)
+# Install from https://ollama.com
+ollama pull llama3.2     # fast, 4GB
+ollama pull gemma4:e4b    # powerful, 6GB
+ollama pull phi4          # small, 3GB
+ollama pull qwen2.5       # multilingual
+```
+
+**Or use remote APIs:**
+```python
+# OpenAI
+config = {'provider': 'openai', 'model': 'gpt-4o', 'api_key': 'sk-...'}
+
+# Anthropic  
+config = {'provider': 'anthropic', 'model': 'claude-3-5-sonnet', 'api_key': 'sk-...'}
+
+# Ollama (any local model)
+config = {'provider': 'ollama', 'model': 'any-model-you-have'}
+
+# Or just use the mock classifier (no LLM needed)
+orchestrator = CortexOrchestrator(use_llm=False)
 ```
 
 ---
@@ -234,16 +253,17 @@ Petri: Verify → Cancel → Confirm
 
 ## Requirements
 
-### Minimum
 - Python 3.11+
-- 4GB RAM
 
-### Recommended (for local LLM)
-- 8GB+ RAM
-- 6GB+ VRAM GPU (GTX 1060 or better)
-- Ollama with gemma4:e4b or llama3.2
+**For local LLM (recommended):**
+- Ollama installed
+- Any model you want (tested: llama3.2, gemma4:e4b, phi4)
 
-> Tested on: Intel i7-7700HQ, 16GB RAM, GTX 1060 6GB
+**For API-based LLM:**
+- API key for OpenAI/Anthropic/etc.
+
+**Without LLM:**
+- Use `use_llm=False` for mock mode (no API key needed)
 
 ---
 
@@ -259,12 +279,73 @@ Based on TB-CSPN findings:
 
 ---
 
-## Future Work
+## Use Cases
 
-- [ ] Model checking integration (PNML export)
-- [ ] Visual workflow editor
-- [ ] Distributed Petri Net execution
-- [ ] Temporal logic guards (LTL/CTL)
+### Business Process Automation
+```yaml
+# Expense approval workflow
+places:
+  - id: "submitted"
+  - id: "manager_review"
+  - id: "finance_review"
+  - id: "approved"
+
+# Auto-escalate large expenses
+guard: "amount > 1000"
+```
+
+### Conversational Assistants
+```
+User: "I need to cancel my order #12345"
+
+LLM: intent=CANCEL, entity=order_12345
+Rules: CANCEL + order → fire_transition("cancel_order")
+Petri: Verify status → Process → Send confirmation
+```
+
+### Multi-Agent Systems
+```
+[Agent-1] ──topic:request──→ [Agent-2]
+                                │
+                            Petri Net
+                                │
+                    ┌───────────┴───────────┐
+                    ▼                       ▼
+               [Agent-3]              [Agent-4]
+                    │                       │
+                    └───────────┬───────────┘
+                                ▼
+                          [Supervisor]
+```
+
+### DevOps / CI-CD Pipelines
+```yaml
+# Deployment pipeline
+places:
+  - id: "build"
+  - id: "test"
+  - id: "staging"
+  - id: "production"
+  - id: "rollback"
+
+# Auto-rollback on failure
+guard: "test_results.passed == false"
+transition: "rollback"
+```
+
+### Customer Support
+```
+User: "I want a refund for order #789"
+LLM: intent=REFUND, entity=order_789, topic=support
+Rules: REFUND + pending → fire_transition("process_refund")
+Petri: Check eligibility → Calculate → Process → Notify
+```
+
+### Trading Systems (from original TB-CSPN paper)
+```
+Market data → LLM extracts intent → Rules map to strategy
+Petri Net: Validates → Executes → Monitors → Alerts
+```
 
 ---
 
