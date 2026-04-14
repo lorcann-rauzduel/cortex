@@ -1,0 +1,57 @@
+name: "task_approval"
+description: "Workflow d'approbation de tâche"
+
+places:
+  - id: "created"
+    type: "initial"
+  - id: "pending_review"
+  - id: "pending_approval"
+  - id: "approved"
+    type: "final"
+  - id: "rejected"
+    type: "final"
+
+transitions:
+  - id: "create"
+    from: ["created"]
+    to: "pending_review"
+    guard: "has_description"
+    action: "create"
+    description: "Créer la tâche"
+
+  - id: "review_ok"
+    from: ["pending_review"]
+    to: "pending_approval"
+    guard: "requires_approval"
+    action: "submit"
+    description: "Soumettre pour approbation"
+
+  - id: "review_direct"
+    from: ["pending_review"]
+    to: "approved"
+    action: "auto_approve"
+    description: "Approbation automatique (pas de validation requise)"
+
+  - id: "approve"
+    from: ["pending_approval"]
+    to: "approved"
+    action: "approve"
+    description: "Approuver la tâche"
+
+  - id: "reject"
+    from: ["pending_approval"]
+    to: "rejected"
+    action: "reject"
+    description: "Rejeter la tâche"
+
+  - id: "escalate"
+    from: ["pending_review", "pending_approval"]
+    to: "pending_approval"
+    action: "escalate"
+    description: "Escalader vers le manager"
+
+  - id: "cancel"
+    from: ["created", "pending_review", "pending_approval"]
+    to: "rejected"
+    action: "cancel"
+    description: "Annuler la tâche"

@@ -1,0 +1,43 @@
+name: "notification_workflow"
+description: "Workflow de notification multi-canal"
+
+places:
+  - id: "pending"
+    type: "initial"
+  - id: "sending_email"
+  - id: "sending_sms"
+  - id: "email_sent"
+  - id: "sms_sent"
+  - id: "completed"
+    type: "final"
+
+transitions:
+  - id: "send_email"
+    from: ["pending"]
+    to: "sending_email"
+    action: "send_email"
+    description: "Envoyer par email"
+
+  - id: "email_done"
+    from: ["sending_email"]
+    to: "email_sent"
+    action: "email_done"
+    description: "Email envoyé"
+
+  - id: "send_sms"
+    from: ["email_sent"]
+    to: "sending_sms"
+    action: "send_sms"
+    description: "Envoyer par SMS"
+
+  - id: "sms_done"
+    from: ["sending_sms"]
+    to: "sms_sent"
+    action: "sms_done"
+    description: "SMS envoyé"
+
+  - id: "notify_done"
+    from: ["email_sent", "sms_sent"]
+    to: "completed"
+    action: "notify_done"
+    description: "Notification terminée"

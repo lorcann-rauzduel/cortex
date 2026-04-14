@@ -1,0 +1,30 @@
+name: "simple_query"
+description: "Workflow simple de requête"
+
+places:
+  - id: "idle"
+    type: "initial"
+  - id: "processing"
+  - id: "completed"
+    type: "final"
+  - id: "error"
+    type: "final"
+
+transitions:
+  - id: "query"
+    from: ["idle"]
+    to: "processing"
+    action: "query"
+    description: "Démarrer le traitement"
+
+  - id: "complete"
+    from: ["processing"]
+    to: "completed"
+    action: "complete"
+    description: "Terminer avec succès"
+
+  - id: "fail"
+    from: ["processing"]
+    to: "error"
+    action: "fail"
+    description: "Terminer en erreur"
