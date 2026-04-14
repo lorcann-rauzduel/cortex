@@ -28,10 +28,22 @@ class LLMClient:
     LLM Client supporting Ollama (default) or llama-cpp-python.
     """
 
-    INTENT_PROMPT = """Tu es un classificateur d'intentions. Réponds UNIQUEMENT avec du JSON valide, rien d'autre.
+    def _build_prompt(self, message: str, context: Optional[Dict] = None) -> str:
+        """Build prompt with optional conversation history"""
+        context = context or {}
+        turn_history = context.get("turn_history", [])
+        
+        history_section = ""
+        if turn_history:
+            history_section = "\n\nConversation history (most recent last):\n" + "\n".join(
+                f"- {turn}" for turn in turn_history[-5:]
+            )
+        
+        return f"""Tu es un classificateur d'intentions. Réponds UNIQUEMENT avec du JSON valide, rien d'autre.
 
 Intents valides: CREATE, APPROVE, REJECT, QUERY, CANCEL, ESCALATE, NOTIFY
 Topics valides: task, approval, report, notification, general
+Confidence: 0.0-1.0 (0.5 = uncertain, <0.5 = ambiguous){history_section}
 
 Réponds STRICTEMENT avec ce format JSON (et rien d'autre):
 {{"intent":"XXX","topics":["xxx"],"entities":{{"key":"value"}},"confidence":0.9}}
@@ -72,7 +84,7 @@ Message: {message}
         if not self._initialized:
             return self._mock_intent_extraction(message)
 
-        prompt = self.INTENT_PROMPT.format(message=message)
+        prompt = self._build_prompt(message, context)
         
         try:
             with httpx.Client(timeout=120) as client:

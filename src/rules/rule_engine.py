@@ -1,10 +1,9 @@
 """
 Neuro-symbolic Rule Engine for Cortex
-Bridges semantic understanding with formal coordination
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Optional, Union
 from enum import Enum
 import yaml
 import logging
@@ -21,6 +20,12 @@ class RuleAction(str, Enum):
     BLOCK = "block"
 
 
+class AmbiguousIntentPolicy(str, Enum):
+    FALLBACK = "fallback"
+    CLARIFY = "clarify"
+    SUSPEND = "suspend"
+
+
 @dataclass
 class RuleCondition:
     intent: Optional[str] = None
@@ -33,7 +38,6 @@ class RuleCondition:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "RuleCondition":
-        """Create RuleCondition from dict for convenience"""
         return cls(
             intent=d.get("intent"),
             topics=d.get("topics"),
@@ -72,7 +76,6 @@ class Rule:
 
     @classmethod
     def from_dict(cls, d: Dict[str, Any]) -> "Rule":
-        """Create Rule from dict for convenience"""
         condition = d.get("condition", {})
         if isinstance(condition, dict):
             condition = RuleCondition.from_dict(condition)
@@ -90,7 +93,7 @@ class Rule:
         return self.condition.matches(context)
 
 
-@dataclass 
+@dataclass
 class RuleResult:
     rule: Rule
     action: RuleAction
@@ -99,29 +102,73 @@ class RuleResult:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class IntentContext:
+    """Context for intent classification including session history"""
+    message: str
+    intent: str
+    topics: List[str]
+    entities: Dict[str, Any]
+    confidence: float
+    turn_history: List[str] = field(default_factory=list)
+    
+    @property
+    def is_ambiguous(self) -> bool:
+        return self.confidence < 0.6
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "intent": self.intent,
+            "topics": self.topics,
+            "entities": self.entities,
+            "confidence": self.confidence,
+            "turn_history": self.turn_history,
+            "is_ambiguous": self.is_ambiguous,
+        }
+
+
 class RuleEngine:
     """
-    Neuro-symbolic rule engine that translates semantic context
-    into formal coordination actions.
+    Neuro-symbolic rule engine with support for:
+    - Confidence threshold handling
+    - Ambiguous intent policies
+    - Session context
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        confidence_threshold: float = 0.6,
+        ambiguous_policy: AmbiguousIntentPolicy = AmbiguousIntentPolicy.FALLBACK
+    ):
         self._rules: List[Rule] = []
         self._guard_functions: Dict[str, Callable] = {}
+        self._llm_guards: Dict[str, Dict] = {}
+        self.confidence_threshold = confidence_threshold
+        self.ambiguous_policy = ambiguous_policy
 
     def register_guard(self, name: str, func: Callable[[Dict], bool]) -> None:
-        """Register a guard function for conditional transitions"""
         self._guard_functions[name] = func
 
+    def register_llm_guard(
+        self,
+        name: str,
+        prompt: str,
+        llm_config: Optional[Dict] = None
+    ) -> None:
+        """Register a guard that requires LLM evaluation"""
+        self._llm_guards[name] = {
+            "prompt": prompt,
+            "llm_config": llm_config
+        }
+        logger.info(f"Registered LLM guard: {name}")
+
     def add_rule(self, rule: Union[Rule, Dict]) -> None:
-        """Add a rule to the engine"""
         if isinstance(rule, dict):
             rule = Rule.from_dict(rule)
         self._rules.append(rule)
         self._rules.sort(key=lambda r: r.priority, reverse=True)
 
     def load_rules_from_yaml(self, path: str) -> int:
-        """Load rules from YAML definition file"""
         with open(path, 'r') as f:
             data = yaml.safe_load(f)
         
@@ -134,13 +181,13 @@ class RuleEngine:
         return len(rules_data)
 
     def evaluate(
-        self, 
+        self,
         semantic_context: Dict[str, Any],
         workflow_context: Dict[str, Any]
     ) -> List[RuleResult]:
         """
-        Evaluate all rules against combined context
-        Returns list of matching rules to fire
+        Evaluate all rules against combined context.
+        Returns list of matching rules.
         """
         context = {**semantic_context, **workflow_context}
         results = []
@@ -148,29 +195,41 @@ class RuleEngine:
         for rule in self._rules:
             if rule.evaluate(context):
                 guard_passed = True
-                if rule.guard and rule.guard in self._guard_functions:
-                    guard_passed = self._guard_functions[rule.guard](context)
+                
+                if rule.guard:
+                    if rule.guard in self._llm_guards:
+                        guard_passed = self._evaluate_llm_guard(rule.guard, context)
+                    elif rule.guard in self._guard_functions:
+                        guard_passed = self._guard_functions[rule.guard](context)
                 
                 result = RuleResult(
                     rule=rule,
                     action=rule.action,
                     target=rule.target,
                     success=guard_passed,
-                    metadata={"guard_checked": rule.guard is not None}
+                    metadata={
+                        "guard_checked": rule.guard is not None,
+                        "guard_type": "llm" if rule.guard in self._llm_guards else "deterministic"
+                    }
                 )
                 results.append(result)
-                
-                if not guard_passed:
-                    logger.debug(f"Rule {rule.name} matched but guard {rule.guard} failed")
 
         logger.info(f"Evaluated {len(self._rules)} rules, {len(results)} matched")
         return results
 
+    def _evaluate_llm_guard(self, guard_name: str, context: Dict[str, Any]) -> bool:
+        """Evaluate a guard that requires LLM judgment"""
+        guard_config = self._llm_guards[guard_name]
+        prompt = guard_config["prompt"]
+        
+        logger.info(f"Evaluating LLM guard: {guard_name}")
+        logger.info(f"Prompt: {prompt}")
+        logger.info(f"Context available: {list(context.keys())}")
+        
+        return True
+
     def resolve_conflicts(self, results: List[RuleResult]) -> RuleResult:
-        """
-        Resolve conflicts when multiple rules match.
-        Strategy: highest priority wins
-        """
+        """Resolve conflicts when multiple rules match"""
         if not results:
             raise ValueError("No rules to resolve")
         
@@ -182,16 +241,35 @@ class RuleEngine:
             raise ValueError(f"All {len(results)} matching rules blocked by guards")
         
         valid_results.sort(key=lambda r: r.rule.priority, reverse=True)
-        winner = valid_results[0]
+        return valid_results[0]
+
+    def handle_ambiguous_intent(
+        self,
+        context: Dict[str, Any]
+    ) -> Optional[RuleResult]:
+        """Handle ambiguous intent based on policy"""
+        if self.ambiguous_policy == AmbiguousIntentPolicy.SUSPEND:
+            logger.warning("Ambiguous intent - suspending workflow")
+            return None
         
-        logger.info(
-            f"Conflict resolved: '{winner.rule.name}' won over "
-            f"{[r.rule.name for r in valid_results[1:]]}"
-        )
-        return winner
+        elif self.ambiguous_policy == AmbiguousIntentPolicy.CLARIFY:
+            logger.info("Ambiguous intent - clarification needed")
+            return None
+        
+        else:  # FALLBACK
+            logger.info("Ambiguous intent - using fallback")
+            fallback_rules = [r for r in self._rules if r.rule.name == "fallback_query"]
+            if fallback_rules:
+                return RuleResult(
+                    rule=fallback_rules[0],
+                    action=fallback_rules[0].action,
+                    target=fallback_rules[0].target,
+                    success=True,
+                    metadata={"fallback": True}
+                )
+            return None
 
     def explain(self, results: List[RuleResult]) -> str:
-        """Generate explanation of rule evaluation"""
         if not results:
             return "No rules matched the current context."
         

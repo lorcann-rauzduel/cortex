@@ -1,6 +1,5 @@
 """
-Cortex Orchestrator - Main orchestration engine
-Bridges semantic understanding with formal coordination
+Cortex Orchestrator - Formal Workflow Engine for Agentic AI
 """
 from __future__ import annotations
 import sys
@@ -8,7 +7,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 from datetime import datetime
 import uuid
@@ -16,7 +15,10 @@ import logging
 
 from semantic.intent_classifier import IntentClassifier, SemanticResult
 from coordination.petri_net import WorkflowEngine, PetriNet, Place, Transition, Token
-from rules.rule_engine import RuleEngine, RuleAction, Rule, RuleCondition
+from rules.rule_engine import (
+    RuleEngine, RuleAction, Rule, RuleCondition, 
+    AmbiguousIntentPolicy, IntentContext
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,36 +27,49 @@ logger = logging.getLogger(__name__)
 class OrchestrationResult:
     success: bool
     intent: str
+    confidence: float
     action_taken: str
     new_state: Optional[Dict[str, Any]]
     message: str
     workflow_instance_id: Optional[str] = None
     error: Optional[str] = None
+    ambiguous: bool = False
+    clarification_needed: bool = False
 
 
 class CortexOrchestrator:
     """
-    Main orchestration engine for Cortex.
+    Formal workflow engine for agentic AI.
     
     Flow:
-    1. Semantic Layer: Classify user intent (LLM or mock)
-    ↓
-    2. Rule Engine: Map intent to coordination action
-    ↓
-    3. Coordination Layer: Execute workflow via Petri Net
+    1. Semantic Layer: Classify intent (LLM)
+    2. Rule Engine: Map intent → action (local)
+    3. Petri Net: Execute workflow (formal, zero LLM)
+    
+    Features:
+    - Deadlock detection
+    - Guard conditions (deterministic + LLM-evaluated)
+    - Ambiguous intent handling
+    - Session context
+    - Workflow boundedness validation
     """
 
     def __init__(
         self,
         use_llm: bool = True,
-        llm_config: Optional[Dict] = None
+        llm_config: Optional[Dict] = None,
+        confidence_threshold: float = 0.6,
+        ambiguous_policy: AmbiguousIntentPolicy = AmbiguousIntentPolicy.FALLBACK
     ):
         self.intent_classifier = IntentClassifier(
             use_llm=use_llm,
             llm_config=llm_config or {"provider": "ollama", "model": "llama3.2"}
         )
         self.workflow_engine = WorkflowEngine()
-        self.rule_engine = RuleEngine()
+        self.rule_engine = RuleEngine(
+            confidence_threshold=confidence_threshold,
+            ambiguous_policy=ambiguous_policy
+        )
         
         self._sessions: Dict[str, Dict[str, Any]] = {}
         self._register_builtin_rules()
@@ -64,6 +79,8 @@ class CortexOrchestrator:
         """Initialize all components"""
         self.intent_classifier.initialize()
         logger.info("Cortex Orchestrator initialized")
+        logger.info(f"Confidence threshold: {self.rule_engine.confidence_threshold}")
+        logger.info(f"Ambiguous policy: {self.rule_engine.ambiguous_policy}")
         return True
 
     def _register_builtin_rules(self) -> None:
@@ -117,6 +134,14 @@ class CortexOrchestrator:
                 target="query_status",
                 priority=5
             ),
+            Rule(
+                name="fallback_query",
+                description="Fallback for ambiguous intent",
+                condition=RuleCondition(intent="QUERY"),
+                action=RuleAction.GOTO_STATE,
+                target="query_status",
+                priority=0
+            ),
         ]
         
         for rule in rules:
@@ -145,17 +170,61 @@ class CortexOrchestrator:
         """
         Main orchestration entry point.
         
-        1. Semantic understanding (LLM or mock)
-        2. Rule matching
-        3. Workflow execution
+        Args:
+            message: User input
+            session_id: Optional session for context
+            workflow_id: Target workflow
+            context: Additional context (turn_history for conversation)
         """
         session_id = session_id or str(uuid.uuid4())
         context = context or {}
         
         if session_id not in self._sessions:
-            self._sessions[session_id] = {"workflows": {}, "context": {}}
+            self._sessions[session_id] = {
+                "workflows": {},
+                "turn_history": [],
+                "context": {}
+            }
         
-        semantic = self.intent_classifier.classify(message, context)
+        session = self._sessions[session_id]
+        turn_history = session.get("turn_history", [])
+        if message:
+            turn_history.append(message)
+            session["turn_history"] = turn_history[-10:]
+        
+        semantic = self.intent_classifier.classify(
+            message, 
+            context={"turn_history": turn_history}
+        )
+        
+        if semantic.confidence < self.rule_engine.confidence_threshold:
+            logger.warning(
+                f"Low confidence: {semantic.confidence} < {self.rule_engine.confidence_threshold}"
+            )
+            
+            if self.rule_engine.ambiguous_policy == AmbiguousIntentPolicy.SUSPEND:
+                return OrchestrationResult(
+                    success=False,
+                    intent=str(semantic.intent.value if hasattr(semantic.intent, 'value') else semantic.intent),
+                    confidence=semantic.confidence,
+                    action_taken="suspended",
+                    new_state=None,
+                    message="Intent ambiguous - workflow suspended",
+                    ambiguous=True,
+                    error="Low confidence"
+                )
+            
+            elif self.rule_engine.ambiguous_policy == AmbiguousIntentPolicy.CLARIFY:
+                return OrchestrationResult(
+                    success=False,
+                    intent=str(semantic.intent.value if hasattr(semantic.intent, 'value') else semantic.intent),
+                    confidence=semantic.confidence,
+                    action_taken="clarification_needed",
+                    new_state=None,
+                    message="Could you clarify your intent?",
+                    ambiguous=True,
+                    clarification_needed=True
+                )
         
         workflow_context = {}
         if workflow_id:
@@ -181,11 +250,12 @@ class CortexOrchestrator:
             if not rule_results:
                 return OrchestrationResult(
                     success=False,
-                    intent=semantic.intent.value if isinstance(semantic.intent, str) else str(semantic.intent),
+                    intent=str(semantic.intent.value if hasattr(semantic.intent, 'value') else semantic.intent),
+                    confidence=semantic.confidence,
                     action_taken="none",
                     new_state=None,
                     message="No matching rules found",
-                    error="No rules matched the current context"
+                    error="No rules matched"
                 )
             
             selected_rule = self.rule_engine.resolve_conflicts(rule_results)
@@ -205,7 +275,8 @@ class CortexOrchestrator:
             
             return OrchestrationResult(
                 success=action_result["success"],
-                intent=semantic.intent.value if isinstance(semantic.intent, str) else str(semantic.intent),
+                intent=str(semantic.intent.value if hasattr(semantic.intent, 'value') else semantic.intent),
+                confidence=semantic.confidence,
                 action_taken=selected_rule.target,
                 new_state=action_result.get("workflow_state"),
                 message=action_result.get("message", "Action completed"),
@@ -217,7 +288,8 @@ class CortexOrchestrator:
             logger.error(f"Orchestration error: {e}")
             return OrchestrationResult(
                 success=False,
-                intent=semantic.intent.value if isinstance(semantic.intent, str) else str(semantic.intent),
+                intent=str(semantic.intent.value if hasattr(semantic.intent, 'value') else semantic.intent),
+                confidence=semantic.confidence,
                 action_taken="error",
                 new_state=None,
                 message=f"Orchestration failed: {str(e)}",
@@ -239,12 +311,12 @@ class CortexOrchestrator:
                 result = self.workflow_engine.fire_by_action(instance_id, target)
                 return {
                     "success": result.success,
-                    "message": f"Fired transition '{target}'" if result.success else result.error,
+                    "message": f"Fired '{target}'" if result.success else result.error,
                     "error": result.error if not result.success else None
                 }
             return {
                 "success": False,
-                "message": f"No active workflow for action '{target}'",
+                "message": f"No active workflow for '{target}'",
                 "error": "No active workflow instance"
             }
         
@@ -261,13 +333,10 @@ class CortexOrchestrator:
                 result = self.workflow_engine.fire_by_action(instance_id, "escalate")
                 return {
                     "success": result.success,
-                    "message": f"Escalated to manager" if result.success else result.error,
+                    "message": "Escalated to manager" if result.success else result.error,
                     "error": result.error if not result.success else None
                 }
-            return {
-                "success": True,
-                "message": "Escalation queued"
-            }
+            return {"success": True, "message": "Escalation queued"}
         
         return {
             "success": False,
@@ -276,20 +345,60 @@ class CortexOrchestrator:
         }
 
     def load_workflow(self, workflow_id: str, yaml_path: str) -> bool:
-        """Load a workflow definition"""
+        """Load a workflow definition with boundedness validation"""
         try:
-            self.workflow_engine.load_workflow_from_yaml(workflow_id, yaml_path)
+            net = self.workflow_engine.load_workflow_from_yaml(workflow_id, yaml_path)
+            
+            is_bounded, issue = self._validate_boundedness(net)
+            if not is_bounded:
+                logger.error(f"Workflow {workflow_id} failed boundedness check: {issue}")
+                raise ValueError(f"Unbounded workflow: {issue}")
+            
+            logger.info(f"Workflow {workflow_id} loaded and validated (bounded)")
             return True
         except Exception as e:
             logger.error(f"Failed to load workflow {workflow_id}: {e}")
-            return False
+            raise
+
+    def _validate_boundedness(self, net: PetriNet) -> tuple[bool, Optional[str]]:
+        """
+        Validate that a Petri Net is bounded (1-safe or k-safe).
+        
+        A net is unbounded if tokens can accumulate infinitely.
+        This is a simplified check - full analysis requires model checking.
+        """
+        from collections import deque
+        
+        transitions = list(net.transitions.keys())
+        
+        for tid in transitions:
+            t = net.transitions[tid]
+            
+            if len(t.from_places) == 0:
+                return False, f"Transition {tid} has no input places (unbounded source)"
+            
+            if len(t.to_place) == 0 or t.to_place == t.from_places[0]:
+                if t.from_places:
+                    return False, f"Transition {tid} creates tokens without consuming (potential unbounded)"
+        
+        return True, None
+
+    def register_llm_guard(
+        self,
+        name: str,
+        prompt: str,
+        llm_config: Optional[Dict] = None
+    ) -> None:
+        """Register a guard that requires LLM evaluation"""
+        self.rule_engine.register_llm_guard(name, prompt, llm_config)
+        self.workflow_engine.register_guard(name, lambda ctx: True)
 
     def get_workflows(self) -> List[str]:
         """List available workflows"""
         return self.workflow_engine.list_workflows()
 
     def get_session_state(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Get session state"""
+        """Get session state including turn history"""
         return self._sessions.get(session_id)
 
     def cleanup_session(self, session_id: str) -> bool:

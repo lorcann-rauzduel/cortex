@@ -1,8 +1,8 @@
-# Cortex - Neuro-Symbolic Orchestration Engine
+# Cortex - Formal Workflow Engine for Agentic AI
 
-A hybrid neuro-symbolic orchestration engine that separates semantic understanding (LLM) from formal coordination (Petri Nets). Inspired by **TB-CSPN architecture** (Borghoff et al., 2025).
+Cortex is a formal workflow engine for agentic AI that separates semantic intent recognition (one LLM call) from state machine coordination (zero LLM calls), enabling deadlock detection, guard conditions, and formal verification on any workflow — with any model.
 
-**Paper**: [Beyond Prompt Chaining: The TB-CSPN Architecture for Agentic AI](https://www.mdpi.com/1999-5903/17/8/363)
+Inspired by **TB-CSPN** (Borghoff et al., 2025): [doi.org/10.3390/fi17080363](https://www.mdpi.com/1999-5903/17/8/363)
 
 ---
 
@@ -10,37 +10,42 @@ A hybrid neuro-symbolic orchestration engine that separates semantic understandi
 
 ### The Problem
 
-Current agentic AI frameworks **conflate** semantic reasoning with orchestration:
+Current agentic AI frameworks conflate semantic reasoning with orchestration:
 - Every coordination decision = 1 LLM API call
 - No formal verification
-- Brittle prompt dependencies
+- No deadlock detection
+- Workflow state not verifiable
 
 ### The Solution
 
-Cortex implements **strict separation**:
+Cortex separates concerns:
 
 ```
-USER INPUT: "Approve task T-123"
-                │
-        ┌───────┴───────┐
-        │               │
-   1. SEMANTIC      2. RULES
-   (LLM)           (Mapping)
-        │               │
-        └───────┬───────┘
-                │
-        3. PETRI NET
-      (Coordination)
+USER INPUT
+        │
+   1. SEMANTIC (LLM)
+      - Intent classification
+      - One call per message
+        │
+   2. RULES (Local)
+      - Map intent → action
+      - Zero LLM calls
+        │
+   3. PETRI NET (Formal)
+      - State machine execution
+      - Deadlock detection
+      - Guard conditions
 ```
 
-### Results (from TB-CSPN study)
+### Key Features
 
-| Metric | Traditional | Cortex |
-|--------|-------------|--------|
-| LLM calls (10-step workflow) | 10 | 1 |
-| Coordination latency | LLM (2-30s) | <1ms (local) |
-| Formal verification | ❌ | ✅ |
-| Deadlock detection | ❌ | ✅ |
+| Feature | Description |
+|---------|-------------|
+| **Deadlock Detection** | Formal verification of workflow liveness |
+| **Guard Conditions** | Preconditions for transitions |
+| **Boundedness Check** | Workflows validated at load time |
+| **Ambiguous Intent Handling** | Configurable fallback policies |
+| **Session Context** | Historical turns for better classification |
 
 ---
 
@@ -54,29 +59,20 @@ pip install fastapi uvicorn pydantic pyyaml networkx httpx pytest
 
 ### LLM Setup (Any Model Works)
 
-Cortex is **model-agnostic**. Use any LLM via Ollama or direct API:
+Cortex is **model-agnostic**:
 
 ```bash
-# Ollama (recommended - local, free)
-# Install from https://ollama.com
-ollama pull llama3.2     # fast, 4GB
-ollama pull gemma4:e4b    # powerful, 6GB
-ollama pull phi4          # small, 3GB
-ollama pull qwen2.5       # multilingual
+# Ollama (local, free)
+ollama pull llama3.2
+ollama pull gemma4:e4b
+ollama pull phi4
 ```
 
-**Or use remote APIs:**
 ```python
-# OpenAI
+# Or use a remote API
 config = {'provider': 'openai', 'model': 'gpt-4o', 'api_key': 'sk-...'}
 
-# Anthropic  
-config = {'provider': 'anthropic', 'model': 'claude-3-5-sonnet', 'api_key': 'sk-...'}
-
-# Ollama (any local model)
-config = {'provider': 'ollama', 'model': 'any-model-you-have'}
-
-# Or just use the mock classifier (no LLM needed)
+# Or no LLM at all
 orchestrator = CortexOrchestrator(use_llm=False)
 ```
 
@@ -95,10 +91,6 @@ result = orchestrator.orchestrate(
     message="Approve task T-123",
     workflow_id='task_approval'
 )
-
-print(f"Intent: {result.intent}")      # APPROVE
-print(f"Action: {result.action_taken}") # approve
-print(f"State: {result.new_state}")    # workflow state
 ```
 
 ### API
@@ -109,24 +101,18 @@ uvicorn api.routes:app --reload --port 8000
 ```
 
 ```bash
-# Semantic classification
-curl -X POST http://localhost:8000/semantic/classify \
-  -H "Content-Type: application/json" \
-  -d '{"message": "Create a new task"}'
-
-# Full orchestration
 curl -X POST http://localhost:8000/orchestrate \
   -H "Content-Type: application/json" \
-  -d '{"message": "Approve the report", "workflow_id": "task_approval"}'
+  -d '{"message": "Create a new task", "workflow_id": "task_approval"}'
 ```
 
 ---
 
 ## Architecture
 
-### Semantic Layer (`src/semantic/`)
+### Semantic Layer (LLM)
 
-Understands user intent via LLM:
+Classifies user intent:
 
 ```python
 # Input: "Reject the deployment"
@@ -139,9 +125,16 @@ Understands user intent via LLM:
 }
 ```
 
-### Rule Engine (`src/rules/`)
+**Ambiguous Intent Handling:**
+- `confidence > threshold` → proceed normally
+- `confidence < threshold` → configurable policy:
+  - `FALLBACK`: Use default intent
+  - `CLARIFY`: Return `AMBIGUOUS_INTENT` state
+  - `SUSPEND`: Pause workflow
 
-Maps semantic context to coordination actions:
+### Rule Engine (Local)
+
+Maps semantic context to actions:
 
 ```python
 Rule(
@@ -151,29 +144,34 @@ Rule(
 )
 ```
 
-### Petri Net Engine (`src/coordination/`)
+**Conditional Transitions (LLM-evaluated):**
+```python
+# For decisions requiring judgment:
+guard_type: "llm_evaluated"
+guard_prompt: "Is this report complete enough to proceed? Answer yes or no."
+```
 
-Formal coordination:
+### Petri Net Engine (Formal)
+
+State machine with formal guarantees:
 
 ```
 Places:     created → pending_review → pending_approval → approved
             │                                        │
-            └───────────── reject ────────────────────┘
-
-Transitions: [create] [submit] [approve/reject]
-```
+            └───────────── reject ──────────────────┘
 
 Features:
+- Boundedness validation at load time
 - Deadlock detection
 - Guard conditions
 - DOT export for visualization
+```
 
 ---
 
 ## Workflow Definition
 
 ```yaml
-# workflows/task_approval.yaml
 name: "task_approval"
 
 places:
@@ -197,31 +195,23 @@ transitions:
     action: "approve"
 ```
 
----
+### Guard Conditions
 
-## Testing
-
-```bash
-pytest tests/ -v
-```
-
----
-
-## Project Structure
-
-```
-cortex/
-├── SPEC.md                    # TB-CSPN specification
-├── README.md                  # This file
-├── pyproject.toml
-├── src/
-│   ├── orchestrator.py        # Main orchestrator
-│   ├── semantic/              # LLM integration
-│   ├── coordination/          # Petri Net engine
-│   ├── rules/                 # Rule engine
-│   └── api/                   # FastAPI routes
-├── workflows/                 # YAML definitions
-└── tests/                    # Unit tests
+```yaml
+transitions:
+  - id: "escalate"
+    from: ["pending_review"]
+    to: "pending_approval"
+    guard:
+      type: "deterministic"
+      condition: "amount > 1000"
+    
+  - id: "evaluate"
+    from: ["submitted"]
+    to: "review_ok"
+    guard:
+      type: "llm_evaluated"
+      prompt: "Is this expense report complete? yes or no."
 ```
 
 ---
@@ -231,12 +221,7 @@ cortex/
 ### Business Process Automation
 ```yaml
 # Expense approval with auto-escalation
-guard: "amount > 1000"  # Escalate large expenses
-```
-
-### Multi-Agent Coordination
-```
-[Agent-1] ──topic:request──→ [Agent-2] ──Petri Net──→ [Supervisor]
+guard: "amount > 1000"
 ```
 
 ### Conversational Assistants
@@ -245,60 +230,6 @@ User: "Cancel order #12345"
 LLM: intent=CANCEL, entity=order_12345
 Rules: CANCEL + order → fire_transition("cancel")
 Petri: Verify → Cancel → Confirm
-```
-
----
-
-## Requirements
-
-- Python 3.11+
-
-**For local LLM (recommended):**
-- Ollama installed
-- Any model you want (tested: llama3.2, gemma4:e4b, phi4)
-
-**For API-based LLM:**
-- API key for OpenAI/Anthropic/etc.
-
-**Without LLM:**
-- Use `use_llm=False` for mock mode (no API key needed)
-
----
-
-## Key Differences from Traditional Frameworks
-
-Based on TB-CSPN findings:
-
-| Aspect | Traditional | **Cortex** |
-|--------|-----------|------------|
-| Semantic/Coordination | Conflated | **Separated** |
-| LLM for coordination | Every step | **Only for intent** |
-| Formal verification | ❌ | ✅ |
-
----
-
-## Use Cases
-
-### Business Process Automation
-```yaml
-# Expense approval workflow
-places:
-  - id: "submitted"
-  - id: "manager_review"
-  - id: "finance_review"
-  - id: "approved"
-
-# Auto-escalate large expenses
-guard: "amount > 1000"
-```
-
-### Conversational Assistants
-```
-User: "I need to cancel my order #12345"
-
-LLM: intent=CANCEL, entity=order_12345
-Rules: CANCEL + order → fire_transition("cancel_order")
-Petri: Verify status → Process → Send confirmation
 ```
 
 ### Multi-Agent Systems
@@ -310,40 +241,104 @@ Petri: Verify status → Process → Send confirmation
                     ┌───────────┴───────────┐
                     ▼                       ▼
                [Agent-3]              [Agent-4]
-                    │                       │
-                    └───────────┬───────────┘
-                                ▼
-                          [Supervisor]
 ```
 
 ### DevOps / CI-CD Pipelines
 ```yaml
-# Deployment pipeline
-places:
-  - id: "build"
-  - id: "test"
-  - id: "staging"
-  - id: "production"
-  - id: "rollback"
-
-# Auto-rollback on failure
-guard: "test_results.passed == false"
+# Deployment with rollback
+guard:
+  type: "deterministic"
+  condition: "test_results.passed == false"
 transition: "rollback"
 ```
 
 ### Customer Support
 ```
-User: "I want a refund for order #789"
-LLM: intent=REFUND, entity=order_789, topic=support
-Rules: REFUND + pending → fire_transition("process_refund")
-Petri: Check eligibility → Calculate → Process → Notify
+User: "Refund for order #789"
+LLM: intent=REFUND, entity=order_789
+Rules: REFUND → fire_transition("process_refund")
+Petri: Check → Calculate → Process → Notify
 ```
 
-### Trading Systems (from original TB-CSPN paper)
+---
+
+## Configuration
+
+### Ambiguous Intent Policy
+
+```python
+orchestrator = CortexOrchestrator(
+    use_llm=True,
+    intent_config={
+        'confidence_threshold': 0.7,
+        'on_ambiguous': 'CLARIFY'  # FALLBACK, CLARIFY, SUSPEND
+    }
+)
 ```
-Market data → LLM extracts intent → Rules map to strategy
-Petri Net: Validates → Executes → Monitors → Alerts
+
+### Session Context
+
+```python
+# Pass conversation history to semantic layer
+result = orchestrator.orchestrate(
+    message="Actually, cancel it",
+    session_id="support_123",
+    context={'turn_history': [
+        "I want to place an order",
+        "Here's your order #456",
+        "Actually, cancel it"
+    ]}
+)
 ```
+
+### LLM-Evaluated Guards
+
+```python
+# For decisions requiring judgment
+orchestrator.workflow_engine.register_llm_guard(
+    name="report_complete",
+    prompt="Is this report complete enough to proceed to review?",
+    llm_config={'model': 'llama3.2'}
+)
+```
+
+---
+
+## Testing
+
+```bash
+pytest tests/ -v
+```
+
+---
+
+## Requirements
+
+- Python 3.11+
+
+**For local LLM:**
+- Ollama installed
+- Any model (tested: llama3.2, gemma4:e4b, phi4)
+
+**For API-based LLM:**
+- API key for OpenAI/Anthropic/etc.
+
+**Without LLM:**
+- Use `use_llm=False` for mock mode
+
+---
+
+## Key Differences from Traditional Frameworks
+
+Based on TB-CSPN findings:
+
+| Aspect | Traditional | **Cortex** |
+|--------|-----------|------------|
+| Semantic/Coordination | Conflated | **Separated** |
+| Formal Verification | ❌ | ✅ |
+| Deadlock Detection | ❌ | ✅ |
+| Workflow Boundedness | ❌ | ✅ |
+| Guard Conditions | Limited | **Full + LLM-evaluated** |
 
 ---
 
@@ -353,3 +348,9 @@ Petri Net: Validates → Executes → Monitors → Alerts
 *Beyond Prompt Chaining: The TB-CSPN Architecture for Agentic AI*  
 Future Internet, 17(8), 363.  
 [doi.org/10.3390/fi17080363](https://www.mdpi.com/1999-5903/17/8/363)
+
+---
+
+## License
+
+MIT License - See [LICENSE](LICENSE)

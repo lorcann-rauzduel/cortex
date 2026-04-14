@@ -33,7 +33,12 @@ class SemanticResult:
     raw_reasoning: str
     session_id: Optional[str] = None
     use_mock: bool = False
-
+    turn_history: List[str] = None
+    
+    def __post_init__(self):
+        if self.turn_history is None:
+            self.turn_history = []
+    
     def to_context(self) -> Dict[str, Any]:
         """Convert to context dict for rule engine"""
         return {
@@ -41,6 +46,7 @@ class SemanticResult:
             "topics": self.topics,
             "entities": self.entities,
             "confidence": self.confidence,
+            "turn_history": self.turn_history,
         }
 
 
@@ -82,8 +88,11 @@ class IntentClassifier:
         """Classify user message into structured semantic result."""
         logger.debug(f"Classifying: {message[:50]}...")
         
+        context = context or {}
+        turn_history = context.get("turn_history", [])
+        
         if self.use_llm and self.llm_client.is_initialized:
-            raw = self.llm_client.extract_intent(message, context)
+            raw = self.llm_client.extract_intent(message, {"turn_history": turn_history})
         else:
             raw = self.mock_classifier.classify(message)
         
@@ -99,10 +108,11 @@ class IntentClassifier:
             entities=raw.get("entities", {}),
             confidence=raw.get("confidence", 0.0),
             raw_reasoning=raw.get("raw_reasoning", ""),
-            use_mock=not self.llm_client.is_initialized
+            use_mock=not self.llm_client.is_initialized,
+            turn_history=turn_history
         )
         
-        logger.info(f"Classification: {result.intent}, topics={result.topics}, mock={result.use_mock}")
+        logger.info(f"Classification: {result.intent}, confidence={result.confidence}, mock={result.use_mock}")
         return result
 
     def batch_classify(self, messages: List[str]) -> List[SemanticResult]:
