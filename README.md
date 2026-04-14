@@ -1,7 +1,5 @@
 # Cortex - Neuro-Symbolic Orchestration Engine
 
-> **"Think" with AI. "Act" with formal methods.**
-
 A hybrid neuro-symbolic orchestration engine that separates semantic understanding (LLM) from formal coordination (Petri Nets). Inspired by **TB-CSPN architecture** (Borghoff et al., 2025).
 
 **Paper**: [Beyond Prompt Chaining: The TB-CSPN Architecture for Agentic AI](https://www.mdpi.com/1999-5903/17/8/363)
